@@ -1,109 +1,113 @@
-version: '3.8'
-
+version: '3'
 services:
   mysql:
     image: mysql:8.0
+    container_name: mysql
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: testdb
     volumes:
       - ./mysql_data:/var/lib/mysql
-      - ./mysql_slow.log:/var/log/mysql_slow.log
-    command: >
-      --slow-query-log=1
-      --slow-query-log-file=/var/log/mysql_slow.log
-      --long-query-time=1
-      --log-queries-not-using-indexes=1
+      - ./my.cnf:/etc/mysql/my.cnf
+      - ./logs:/var/log/mysql
     ports:
       - "3306:3306"
 
-  filebeat:
-    image: docker.elastic.co/beats/filebeat:7.17.0
-    volumes:
-      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml
-      - ./mysql_slow.log:/var/log/mysql_slow.log
-    depends_on:
-      - mysql
-
   # ELK Stack
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.0
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.5.0
     environment:
-      - "discovery.type=single-node"
-      - "cluster.name=elasticsearch-main-cluster"
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
     volumes:
-      - ./es_data:/usr/share/elasticsearch/data
-    ports:
-      - "9200:9200"
-      - "9300:9300"
-    mem_limit: 1g
+      - ./data/elasticsearch:/usr/share/elasticsearch/data
+    mem_limit: 2g
     cpu_shares: 512
+    ports:
+      - 9200:9200
+
+  elasticsearch-exporter:
+    image: prometheuscommunity/elasticsearch-exporter:latest
+    environment:
+      - ES_URI=http://elasticsearch:9200
+    ports:
+      - 9114:9114
+    depends_on:
+      - elasticsearch
 
   logstash:
-    image: docker.elastic.co/logstash/logstash:8.0.0
+    image: docker.elastic.co/logstash/logstash:8.5.0
     volumes:
       - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
-    depends_on:
-      - elasticsearch
     ports:
-      - "5044:5044"
+      - 5044:5044
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:7.17.0
+    image: docker.elastic.co/kibana/kibana:8.5.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - 5601:5601
+
+  filebeat-elk:
+    image: docker.elastic.co/beats/filebeat:8.5.0
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml
+      - ./logs:/var/log/mysql
     depends_on:
       - elasticsearch
-    ports:
-      - "5601:5601"
+      - logstash
+      - kibana
 
-  #####################################################################################################################
-  # Graylog Stack
+  # GrayLog Stack
   graylog:
-    image: graylog/graylog:4.3
+    image: graylog/graylog:4.2
     environment:
       - GRAYLOG_PASSWORD_SECRET=somepasswordpepper
-      - GRAYLOG_ROOT_PASSWORD_SHA2=<password-sha2>
+      - GRAYLOG_ROOT_USERNAME=admin
+      - GRAYLOG_ROOT_PASSWORD_SHA2=415e8a6ba1c3eb93e81df34731acc3d60efee685c8e6f7412592a45ba3a0e3b0
       - GRAYLOG_HTTP_EXTERNAL_URI=http://127.0.0.1:9000/
+    ports:
+      - 9000:9000
+      - 12201:12201/udp  # GELF input
     depends_on:
       - mongo
-      - elasticsearch_graylog
-    ports:
-      - "9000:9000"
+      - elasticsearch-graylog
 
   mongo:
     image: mongo:4.2
-    volumes:
-      - ./mongo_data:/data/db
 
-  elasticsearch_graylog:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.0
+  elasticsearch-graylog:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.10.2
     environment:
-      - "discovery.type=single-node"
-      - "cluster.name=elasticsearch-graylog-cluster"
-    volumes:
-      - ./es_graylog_data:/usr/share/elasticsearch/data
-    ports:
-      - "9201:9200"
-      - "9301:9300"
-    mem_limit: 1g
-    cpu_shares: 512
+      - discovery.type=single-node
 
-  filebeat_graylog:
-    image: docker.elastic.co/beats/filebeat:7.17.0
+  filebeat-graylog:
+    image: docker.elastic.co/beats/filebeat:8.5.0
     volumes:
       - ./filebeat_graylog.yml:/usr/share/filebeat/filebeat.yml
-      - ./mysql_slow.log:/var/log/mysql_slow.log
+      - ./logs:/var/log/mysql
     depends_on:
       - graylog
 
-#####################################################################################################################
-#metrics:
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+  # Monitoring - Prometheus and Grafana
+  metricbeat:
+    image: docker.elastic.co/beats/metricbeat:8.5.0
+    user: root
     volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:rw
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
-    ports:
-      - "8080:8080"
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+      - /proc:/hostfs/proc:ro
+      - /:/hostfs:ro
+      - ./metricbeat.yml:/usr/share/metricbeat/metricbeat.yml
+    environment:
+      - setup.kibana.host=http://kibana:5601
+      - output.elasticsearch.hosts=["http://elasticsearch:9200"]
+    depends_on:
+      - elasticsearch
+      - kibana
+      - graylog
+
+volumes:
+  mysql_data:
+  logs:

@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['mysql:3306']
+
+  - job_name: 'elk'
+    static_configs:
+      - targets: ['elasticsearch-exporter:9114']
+
+  - job_name: 'graylog'
+    static_configs:
+      - targets: ['graylog:9000']
